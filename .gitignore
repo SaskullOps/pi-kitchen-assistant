@@ -1,0 +1,8 @@
+.env
+data/
+build/
+*.bak*
+__pycache__/
+*.pyc
+recipes/enriched/
+out.json

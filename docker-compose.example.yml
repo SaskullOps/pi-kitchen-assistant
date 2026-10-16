@@ -1,0 +1,94 @@
+# Example stack: Grocy + Tandoor (+ Postgres) + n8n + Telegram polling bridge.
+# Copy .env.example to .env, fill it in, then: docker compose -f docker-compose.example.yml up -d
+# Images are multi-arch (arm64 for Raspberry Pi 4/5, amd64 for PCs).
+
+services:
+  grocy:
+    image: lscr.io/linuxserver/grocy:latest
+    container_name: grocy
+    restart: unless-stopped
+    networks: [kitchen-net]
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${KITCHEN_TIMEZONE:-Europe/Madrid}
+    volumes:
+      - ./data/grocy:/config
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${GROCY_PORT:-9283}:80"
+
+  tandoor-db:
+    image: postgres:16-alpine
+    container_name: tandoor-db
+    restart: unless-stopped
+    networks: [kitchen-net]
+    environment:
+      - POSTGRES_USER=tandoor
+      - POSTGRES_DB=tandoor
+      - POSTGRES_PASSWORD=${TANDOOR_DB_PASSWORD}
+    volumes:
+      - ./data/tandoor/postgresql:/var/lib/postgresql/data
+
+  tandoor:
+    image: vabene1111/recipes:latest
+    container_name: tandoor
+    restart: unless-stopped
+    networks: [kitchen-net]
+    depends_on: [tandoor-db]
+    environment:
+      - SECRET_KEY=${TANDOOR_SECRET_KEY}
+      - DB_ENGINE=django.db.backends.postgresql
+      - POSTGRES_HOST=tandoor-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=tandoor
+      - POSTGRES_DB=tandoor
+      - POSTGRES_PASSWORD=${TANDOOR_DB_PASSWORD}
+      - ALLOWED_HOSTS=${TANDOOR_ALLOWED_HOSTS:-*}
+      - CSRF_TRUSTED_ORIGINS=${TANDOOR_ORIGIN:-http://localhost:8095}
+      - TZ=${KITCHEN_TIMEZONE:-Europe/Madrid}
+    volumes:
+      - ./data/tandoor/staticfiles:/opt/recipes/staticfiles
+      - ./data/tandoor/mediafiles:/opt/recipes/mediafiles
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${TANDOOR_PORT:-8095}:80"
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    networks: [kitchen-net]
+    environment:
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-false}
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      - GENERIC_TIMEZONE=${KITCHEN_TIMEZONE:-Europe/Madrid}
+      - TZ=${KITCHEN_TIMEZONE:-Europe/Madrid}
+    volumes:
+      - n8n-data:/home/node/.n8n
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${N8N_PORT:-5678}:5678"
+
+  # Long-polls Telegram and forwards updates from allowed chats to n8n over the internal network,
+  # so no inbound port or public webhook is needed.
+  tg-kitchen-bridge:
+    image: python:3.12-alpine
+    container_name: tg-kitchen-bridge
+    restart: unless-stopped
+    networks: [kitchen-net]
+    depends_on: [n8n]
+    command: ["python", "-u", "/app/bridge.py"]
+    environment:
+      - TELEGRAM_KITCHEN_BOT_TOKEN=${TELEGRAM_KITCHEN_BOT_TOKEN}
+      - KITCHEN_ALLOWED_CHAT_IDS=${KITCHEN_ALLOWED_CHAT_IDS}
+      - KITCHEN_WEBHOOK_SECRET=${KITCHEN_WEBHOOK_SECRET}
+      - N8N_KITCHEN_WEBHOOK=http://n8n:5678/webhook/${KITCHEN_WEBHOOK_PATH:-kitchen-telegram}
+    volumes:
+      - ./bridge/bridge.py:/app/bridge.py:ro
+      - ./data/bridge:/data
+
+networks:
+  kitchen-net:
+
+volumes:
+  n8n-data:
